@@ -233,6 +233,15 @@ void lcd_show_num(uint16_t x, uint16_t y, uint32_t num, uint8_t len, uint8_t siz
 void lcd_show_xnum(uint16_t x, uint16_t y, uint32_t num, uint8_t len, uint8_t size, uint8_t mode, uint16_t color);      /* 扩展显示数字 */
 void lcd_show_string(uint16_t x, uint16_t y, uint16_t width, uint16_t height, uint8_t size, char *p, uint16_t color);   /* 显示字符串 */
 
+/* LCD Extended Initialization Functions */
+void lcd_ex_st7789_reginit(void);
+void lcd_ex_ili9341_reginit(void);
+void lcd_ex_nt35310_reginit(void);
+void lcd_ex_st7796_reginit(void);
+void lcd_ex_nt35510_reginit(void);
+void lcd_ex_ili9806_reginit(void);
+void lcd_ex_ssd1963_reginit(void);
+
 #endif
 
 

@@ -38,7 +38,7 @@
  */
 #include <stdio.h>
 
-#include "lcd_ex.c"
+// #include "lcd_ex.c"
 
 
 SRAM_HandleTypeDef g_sram_handle;   /* SRAM句柄(用于控制LCD) */

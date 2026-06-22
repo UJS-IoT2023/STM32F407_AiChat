@@ -2,9 +2,10 @@
 CAD.formats=
 CAD.pinconfig=
 CAD.provider=
+FREERTOS.BinarySemaphores01=LlmGenSem,Dynamic,NULL,Available
 FREERTOS.FootprintOK=true
-FREERTOS.IPParameters=Tasks01,configUSE_NEWLIB_REENTRANT,FootprintOK
-FREERTOS.Tasks01=LlmTask,0,512,StartLlmTask,Default,NULL,Dynamic,NULL,NULL
+FREERTOS.IPParameters=Tasks01,configUSE_NEWLIB_REENTRANT,FootprintOK,BinarySemaphores01
+FREERTOS.Tasks01=LlmTask,0,2048,StartLlmTask,Default,NULL,Dynamic,NULL,NULL;UsbKbTask,1,512,StartUsbKbTask,Default,NULL,Dynamic,NULL,NULL
 FREERTOS.configUSE_NEWLIB_REENTRANT=1
 FSMC.DataSetupTime1=60
 FSMC.ExtendedAddressSetupTime1=3
