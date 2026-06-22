@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "lcd.h"
+#include "tui.h"
 #include "usbh_def.h"
 /* USER CODE END Includes */
 
@@ -160,7 +161,7 @@ void StartLlmTask(void const *argument) {
 
     osDelay(3000);
     printf("\r\n>> Initiating System Self-Test with AI...\r\n");
-    lcd_show_string(10, 50, 220, 16, 16, "Initiating LLM API...", YELLOW);
+    tui_printf_color(YELLOW, "Initiating LLM API...\n");
 
     strcpy(user_input_buffer, "hello");
     user_input_index = strlen("hello");
@@ -170,9 +171,9 @@ void StartLlmTask(void const *argument) {
         if (osSemaphoreWait(LlmGenSemHandle, osWaitForever) == osOK) {
             printf("\r\n=== Sending User Input to LLM API ===\r\n");
             printf("Input: %s\r\n", user_input_buffer);
-            lcd_show_string(10, 50, 220, 16, 16, "Connecting to API...", YELLOW);
+            tui_printf_color(YELLOW, "Connecting to API...\n");
 
-            if (ESP8266_SendCmd("AT+CIPSTART=\"TCP\",\"192.168.0.158\",8080\r\n", "CONNECT", 3000)) {
+            if (ESP8266_SendCmd("AT+CIPSTART=\"TCP\",\"192.168.5.152\",8080\r\n", "CONNECT", 3000)) {
                 printf("<< TCP connect success\r\n");
 
                 // url encode
@@ -194,7 +195,7 @@ void StartLlmTask(void const *argument) {
                 char http_req[1024];
                 snprintf(http_req, sizeof(http_req),
                          "GET /api/llm/generate?user_input=%s HTTP/1.1\r\n"
-                         "Host: 192.168.0.158:8080\r\n"
+                         "Host: 192.168.5.152:8080\r\n"
                          "Connection: close\r\n\r\n",
                          encoded_input);
 
@@ -228,40 +229,77 @@ void StartLlmTask(void const *argument) {
                     if (tcp_done) {
                         printf("<< Response Received! Parsing...\r\n");
 
-                        char *body = strstr(tcp_rx_buffer, "\r\n\r\n");
-                        if (body != NULL) {
-                            body += 4; // 跳过 \r\n\r\n
+                        // 【改进 1】先在缓冲区中寻找真正的 HTTP 协议头起始位置，避开 "SEND OK"
+                        char *http_start = strstr(tcp_rx_buffer, "HTTP/1.");
+                        if (http_start != NULL) {
+                            // 【改进 2】从 HTTP 协议头之后，寻找真正的 Header 和 Body 的分界线
+                            char *body = strstr(http_start, "\r\n\r\n");
+                            if (body != NULL) {
+                                body += 4; // 跳过 \r\n\r\n
 
-                            // 清理：原位抹掉 body 中残留的 +IPD,N: 前缀和 CLOSED
-                            char *out = body;
-                            char *p = body;
-                            while (*p) {
-                                if (strncmp(p, "+IPD,", 5) == 0) {
-                                    while (*p && *p != ':') p++;
-                                    if (*p == ':') p++;
-                                    continue;
+                                // 清理：原位抹掉 body 中残留的 +IPD,N: 前缀和 CLOSED
+                                char *out = body;
+                                char *p = body;
+                                while (*p) {
+                                    if (strncmp(p, "+IPD,", 5) == 0) {
+                                        while (*p && *p != ':') p++;
+                                        if (*p == ':') p++;
+                                        continue;
+                                    }
+                                    if (strncmp(p, "CLOSED", 6) == 0) break;
+                                    *out++ = *p++;
                                 }
-                                if (strncmp(p, "CLOSED", 6) == 0) break;
-                                *out++ = *p++;
+                                *out = '\0';
+
+                                // 此时串口打印出来的就是纯净的、去掉了 HTTP 头的 Body 内容
+                                printf("--- LLM Cleaned Body ---\r\n%s\r\n------------------\r\n", body);
+
+                                // 清屏并准备打印到 LCD
+                                // lcd_clear(BLACK);
+                                tui_printf_color(GREEN, "AI Reply:\n");
+
+                                // 【改进 3】LCD 友好型安全字符流打印，防止连续大量空格导致屏幕跑飞
+                                char *read_ptr = body;
+                                int continuous_space = 0;
+                                while (*read_ptr) {
+                                    // 压缩连续的多余空格，防止坐标溢出
+                                    if (*read_ptr == ' ' || *read_ptr == '\t') {
+                                        continuous_space++;
+                                        if (continuous_space > 1) {
+                                            read_ptr++;
+                                            continue;
+                                        }
+                                    } else {
+                                        continuous_space = 0;
+                                    }
+
+                                    // 过滤掉 \r 符号，统一只用 \n 换行
+                                    if (*read_ptr == '\r') {
+                                        read_ptr++;
+                                        continue;
+                                    }
+
+                                    // 逐个字符安全输出到 LCD
+                                    char t_buf[2] = {*read_ptr, '\0'};
+                                    tui_printf("%s", t_buf);
+                                    read_ptr++;
+                                }
+
+                                tui_printf("\n[Done]");
+                            } else {
+                                printf("<< Error: body delimiter not found after HTTP header\r\n");
                             }
-                            *out = '\0';
-
-                            printf("--- LLM return ---\r\n%s\r\n------------------\r\n", body);
-
-                            lcd_clear(BLACK);
-                            lcd_show_string(10, 50, 220, 16, 16, "AI Reply:", GREEN);
-                            lcd_show_string(10, 70, 220, 16, 16, (uint8_t *) body, WHITE);
                         } else {
-                            printf("<< Error: body delimiter not found\r\n");
+                            printf("<< Error: 'HTTP/1.' protocol header not found\r\n");
                         }
                     } else {
                         printf("<< TCP receive timeout\r\n");
-                        lcd_show_string(10, 50, 220, 16, 16, "API Timeout!        ", RED);
+                        tui_printf_color(RED, "API Timeout!\n");
                     }
                 }
             } else {
                 printf("<< TCP connect failed\r\n");
-                lcd_show_string(10, 50, 220, 16, 16, "API Connect Failed! ", RED);
+                tui_printf_color(RED, "API Connect Failed!\n");
             }
 
             // =====================================

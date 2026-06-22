@@ -9,7 +9,7 @@
 
 static uint16_t cursor_x = 0;
 static uint16_t cursor_y = 0;
-static uint8_t  font_size = 16;
+static uint8_t  font_size = 12;
 
 static osMutexId tui_mutex = NULL;
 osMutexDef(TuiMutex);
