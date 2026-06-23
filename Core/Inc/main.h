@@ -46,7 +46,9 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
-
+#define WIFI_SSID   "417"
+#define WIFI_PASSWD "123456789"
+#define LLM_HOST    "192.168.0.158"
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
