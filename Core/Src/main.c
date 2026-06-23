@@ -145,7 +145,7 @@ int main(void) {
 
     ESP8266_SendCmd("AT\r\n", "OK", 1000);
     ESP8266_SendCmd("AT+CWMODE=1\r\n", "OK", 1000);
-    if (ESP8266_SendCmd("AT+CWJAP=\"Redmi\",\"12345678\"\r\n", "WIFI GOT IP", 15000)) {
+    if (ESP8266_SendCmd("AT+CWJAP=\"" WIFI_SSID "\",\"" WIFI_PASSWD "\"\r\n", "WIFI GOT IP", 15000)) {
         tui_printf_color(GREEN, "[ OK ] WiFi Connected!\n");
 
         ESP8266_SendCmd("AT+CIFSR\r\n", "OK", 2000);

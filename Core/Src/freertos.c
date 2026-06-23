@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
 #include "main.h"
 #include "cmsis_os.h"
 
@@ -30,6 +31,8 @@
 #include "lcd.h"
 #include "tui.h"
 #include "usbh_def.h"
+#include "usbh_hid.h"
+#include "usbh_hid_keybd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,7 +66,11 @@ extern volatile uint8_t http_header_complete;
 
 extern UART_HandleTypeDef huart3;
 
-USBH_HandleTypeDef hUSBHostFS;
+/* 键盘事件队列:USBH_HID_EventCallback 把按键 ASCII 推入,UsbKbTask 阻塞读取处理。
+ * 拆成 ISR/USB 任务上下文中产事件 + 普通任务中消费事件,避免在 USB Host 任务的
+ * 512B 小栈上调用 tui_printf(其内部有 256B 缓冲区 + vsnprintf)导致栈溢出。*/
+static QueueHandle_t keybd_queue = NULL;
+
 char user_input_buffer[256];
 uint16_t user_input_index = 0;
 /* USER CODE END Variables */
@@ -130,7 +137,8 @@ void MX_FREERTOS_Init(void) {
     /* USER CODE END RTOS_TIMERS */
 
     /* USER CODE BEGIN RTOS_QUEUES */
-    /* add queues, ... */
+    /* 键盘事件队列:容纳 32 个 ASCII 字节,事件回调入队,UsbKbTask 出队 */
+    keybd_queue = xQueueCreate(32, sizeof(uint8_t));
     /* USER CODE END RTOS_QUEUES */
 
     /* Create the thread(s) */
@@ -173,7 +181,7 @@ void StartLlmTask(void const *argument) {
             printf("Input: %s\r\n", user_input_buffer);
             tui_printf_color(YELLOW, "Connecting to API...\n");
 
-            if (ESP8266_SendCmd("AT+CIPSTART=\"TCP\",\"192.168.5.152\",8080\r\n", "CONNECT", 3000)) {
+            if (ESP8266_SendCmd("AT+CIPSTART=\"TCP\",\"" LLM_HOST "\",8080\r\n", "CONNECT", 3000)) {
                 printf("<< TCP connect success\r\n");
 
                 // url encode
@@ -195,7 +203,7 @@ void StartLlmTask(void const *argument) {
                 char http_req[1024];
                 snprintf(http_req, sizeof(http_req),
                          "GET /api/llm/generate?user_input=%s HTTP/1.1\r\n"
-                         "Host: 192.168.5.152:8080\r\n"
+                         "Host: " LLM_HOST ":8080\r\n"
                          "Connection: close\r\n\r\n",
                          encoded_input);
 
@@ -285,7 +293,7 @@ void StartLlmTask(void const *argument) {
                                     read_ptr++;
                                 }
 
-                                tui_printf("\n[Done]");
+                                tui_printf("[Done]\n");
                             } else {
                                 printf("<< Error: body delimiter not found after HTTP header\r\n");
                             }
@@ -326,11 +334,98 @@ void StartLlmTask(void const *argument) {
 /* USER CODE END Header_StartUsbKbTask */
 void StartUsbKbTask(void const *argument) {
     /* USER CODE BEGIN StartUsbKbTask */
-    /* Infinite loop */
+
+    uint8_t ascii = 0;
+
+    printf(">> USB Keyboard Task Started, waiting for device...\r\n");
+
+    /* Infinite loop:阻塞等待 USBH_HID_EventCallback 推入的按键事件,
+     * 不再轮询 USBH_HID_GetKeybdInfo(那会在两个上下文里重复消费 FIFO 并跑出错的句柄)。*/
     for (;;) {
-        osDelay(1);
+        if (keybd_queue == NULL) {
+            osDelay(50);
+            continue;
+        }
+
+        /* 永久阻塞,直到回调推入一个 ASCII。CPU 让给 LlmTask / USB Host 任务。*/
+        if (xQueueReceive(keybd_queue, &ascii, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        // A. 处理退格键 (Backspace / Delete)
+        if (ascii == '\b' || ascii == 0x7F) {
+            if (user_input_index > 0) {
+                user_input_index--;
+                user_input_buffer[user_input_index] = '\0';
+
+                // 实时 LCD 擦除回显：由于 tui.c 是流式覆盖打印，
+                // 最佳的做法是清屏，重新打印固定标头和用户当前已输入的整行缓冲区
+                tui_clear();
+                tui_printf_color(WHITE, "LLM Chat Box\n");
+                tui_printf("Input: %s", user_input_buffer);
+
+                // 串口同步打印退格效果
+                printf("\b \b");
+            }
+        }
+        // B. 处理回车键 (Enter)，触发大模型生成任务
+        else if (ascii == '\r' || ascii == '\n') {
+            if (user_input_index > 0) { // 确保用户输入了内容
+
+                // 在 LCD 和串口输出提示
+                tui_printf("\n[Sending...]\n");
+                printf("\r\n>> Prompt Committed. Releasing Semaphore...\r\n");
+
+                // 释放信号量，唤醒 StartLlmTask
+                osSemaphoreRelease(LlmGenSemHandle);
+            }
+        }
+        // C. 处理普通可见字符（空格到波浪号）
+        else if (ascii >= 32 && ascii <= 126) {
+            if (user_input_index < sizeof(user_input_buffer) - 1) {
+
+                // 存入 user_input_buffer
+                user_input_buffer[user_input_index++] = (char)ascii;
+                user_input_buffer[user_input_index] = '\0';
+
+                // 1. 实时显示在 LCD 屏幕上
+                // 你的 tui_putc 已经自带了撞墙换行和纵向换行清屏机制，非常安全
+                tui_printf("%c", ascii);
+
+                // 2. 串口回显，方便电脑调试
+                printf("%c", ascii);
+            }
+        }
     }
     /* USER CODE END StartUsbKbTask */
+}
+
+/* USB Host 库的弱回调:每次 HID 收到新数据(中断端点回报)时,USB Host 任务
+ * 会用真正的 phost(= &hUsbHostFS)调到这里。我们在此读出 ASCII,只做最小工作
+ * (压入队列),把耗时的 LCD/串口 IO 留给 UsbKbTask。这样既能拿到正确的句柄,
+ * 又不在 USB Host 任务的 512B 小栈上做大动作。
+ *
+ * 这是 keyboard.c 原本占用的回调位置 —— 它已被删除,所以这里没有重复定义冲突。*/
+void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
+{
+    if (USBH_HID_GetDeviceType(phost) != HID_KEYBOARD) {
+        return;
+    }
+
+    HID_KEYBD_Info_TypeDef *info = USBH_HID_GetKeybdInfo(phost);
+    if (info == NULL) {
+        return;
+    }
+
+    uint8_t ascii = USBH_HID_GetASCIICode(info);
+    if (ascii == 0) {
+        return;
+    }
+
+    if (keybd_queue != NULL) {
+        /* 0 超时:队列满就丢弃,绝不阻塞 USB Host 任务 */
+        (void)xQueueSend(keybd_queue, &ascii, 0);
+    }
 }
 
 /* Private application code --------------------------------------------------*/
