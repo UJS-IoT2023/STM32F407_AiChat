@@ -98,7 +98,6 @@ static void tui_putc(char ch)
             cursor_y = 0;
         }
 
-        /* mode=0:空白点用背景色覆盖,自然擦除该位置的旧字符. */
         lcd_show_char(cursor_x, cursor_y, ch, font_size, 0, g_point_color);
 
         cursor_x = (uint16_t)(cursor_x + c_width);

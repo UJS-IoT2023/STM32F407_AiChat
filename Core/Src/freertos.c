@@ -66,9 +66,9 @@ extern volatile uint8_t http_header_complete;
 
 extern UART_HandleTypeDef huart3;
 
-/* 键盘事件队列:USBH_HID_EventCallback 把按键 ASCII 推入,UsbKbTask 阻塞读取处理。
- * 拆成 ISR/USB 任务上下文中产事件 + 普通任务中消费事件,避免在 USB Host 任务的
- * 512B 小栈上调用 tui_printf(其内部有 256B 缓冲区 + vsnprintf)导致栈溢出。*/
+// #define TEST_INPUT "Can you introduce yourself?"
+#define TEST_INPUT "hello"
+
 static QueueHandle_t keybd_queue = NULL;
 
 char user_input_buffer[256];
@@ -168,21 +168,19 @@ void StartLlmTask(void const *argument) {
     /* USER CODE BEGIN StartLlmTask */
 
     osDelay(3000);
-    printf("\r\n>> Initiating System Self-Test with AI...\r\n");
     tui_printf_color(YELLOW, "Initiating LLM API...\n");
 
-    strcpy(user_input_buffer, "hello");
-    user_input_index = strlen("hello");
+    strcpy(user_input_buffer, TEST_INPUT);
+    user_input_index = strlen(TEST_INPUT);
 
     /* Infinite loop */
     for (;;) {
         if (osSemaphoreWait(LlmGenSemHandle, osWaitForever) == osOK) {
-            printf("\r\n=== Sending User Input to LLM API ===\r\n");
             printf("Input: %s\r\n", user_input_buffer);
-            tui_printf_color(YELLOW, "Connecting to API...\n");
+            tui_printf_color(YELLOW, "Connecting to host: " LLM_HOST "\n");
 
-            if (ESP8266_SendCmd("AT+CIPSTART=\"TCP\",\"" LLM_HOST "\",8080\r\n", "CONNECT", 3000)) {
-                printf("<< TCP connect success\r\n");
+            if (ESP8266_SendCmd("AT+CIPSTART=\"TCP\",\"" LLM_HOST "\",8080\r\n", "CONNECT", 10000)) {
+                tui_printf_color(GREEN, "[OK]TCP connect success\n");
 
                 // url encode
                 char encoded_input[512] = {0};
@@ -211,7 +209,7 @@ void StartLlmTask(void const *argument) {
                 sprintf(send_cmd, "AT+CIPSEND=%d\r\n", strlen(http_req));
 
                 // 1. 先发 CIPSEND 并等 > 提示符（仍在 AT 模式）
-                if (ESP8266_SendCmd(send_cmd, ">", 2000)) {
+                if (ESP8266_SendCmd(send_cmd, ">", 20000)) {
                     printf(">> Sending HTTP request...\r\n");
 
                     // 2. 切换到 TCP 接收模式
@@ -223,7 +221,7 @@ void StartLlmTask(void const *argument) {
                     http_header_complete = 0;
                     tcp_receiving = 1;
 
-                    // 3. 直接用 HAL_UART_Transmit 发 HTTP（不走 SendCmd）
+                    // 3. 直接用 HAL_UART_Transmit 发 HTTP
                     HAL_UART_Transmit(&huart3, (uint8_t *) http_req, strlen(http_req), HAL_MAX_DELAY);
 
                     // 4. 等待 TCP 真正结束（CLOSED）
@@ -233,14 +231,11 @@ void StartLlmTask(void const *argument) {
                         osDelay(10);
                     }
 
-                    // 5. 此时 tcp_rx_buffer 已经是完整的 HTTP 响应
                     if (tcp_done) {
                         printf("<< Response Received! Parsing...\r\n");
 
-                        // 【改进 1】先在缓冲区中寻找真正的 HTTP 协议头起始位置，避开 "SEND OK"
                         char *http_start = strstr(tcp_rx_buffer, "HTTP/1.");
                         if (http_start != NULL) {
-                            // 【改进 2】从 HTTP 协议头之后，寻找真正的 Header 和 Body 的分界线
                             char *body = strstr(http_start, "\r\n\r\n");
                             if (body != NULL) {
                                 body += 4; // 跳过 \r\n\r\n
@@ -259,12 +254,8 @@ void StartLlmTask(void const *argument) {
                                 }
                                 *out = '\0';
 
-                                // 此时串口打印出来的就是纯净的、去掉了 HTTP 头的 Body 内容
-                                printf("--- LLM Cleaned Body ---\r\n%s\r\n------------------\r\n", body);
-
-                                // 清屏并准备打印到 LCD
-                                // lcd_clear(BLACK);
-                                tui_printf_color(GREEN, "AI Reply:\n");
+                                printf("AI reply:\n", body);
+                                tui_printf_color(GREEN, "AI reply:\n");
 
                                 // 【改进 3】LCD 友好型安全字符流打印，防止连续大量空格导致屏幕跑飞
                                 char *read_ptr = body;
@@ -307,7 +298,7 @@ void StartLlmTask(void const *argument) {
                 }
             } else {
                 printf("<< TCP connect failed\r\n");
-                tui_printf_color(RED, "API Connect Failed!\n");
+                tui_printf_color(RED, "[Failed]API Connect Failed!\n");
             }
 
             // =====================================
@@ -337,10 +328,9 @@ void StartUsbKbTask(void const *argument) {
 
     uint8_t ascii = 0;
 
-    printf(">> USB Keyboard Task Started, waiting for device...\r\n");
+    printf("USB Keyboard Task Started, waiting for device...\r\n");
 
-    /* Infinite loop:阻塞等待 USBH_HID_EventCallback 推入的按键事件,
-     * 不再轮询 USBH_HID_GetKeybdInfo(那会在两个上下文里重复消费 FIFO 并跑出错的句柄)。*/
+    // Infinite loop:阻塞等待 USBH_HID_EventCallback 推入的按键事件
     for (;;) {
         if (keybd_queue == NULL) {
             osDelay(50);
@@ -402,8 +392,7 @@ void StartUsbKbTask(void const *argument) {
 
 /* USB Host 库的弱回调:每次 HID 收到新数据(中断端点回报)时,USB Host 任务
  * 会用真正的 phost(= &hUsbHostFS)调到这里。我们在此读出 ASCII,只做最小工作
- * (压入队列),把耗时的 LCD/串口 IO 留给 UsbKbTask。这样既能拿到正确的句柄,
- * 又不在 USB Host 任务的 512B 小栈上做大动作。
+ * (压入队列),把耗时的 LCD/串口 IO 留给 UsbKbTask。
  *
  * 这是 keyboard.c 原本占用的回调位置 —— 它已被删除,所以这里没有重复定义冲突。*/
 void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
@@ -423,7 +412,6 @@ void USBH_HID_EventCallback(USBH_HandleTypeDef *phost)
     }
 
     if (keybd_queue != NULL) {
-        /* 0 超时:队列满就丢弃,绝不阻塞 USB Host 任务 */
         (void)xQueueSend(keybd_queue, &ascii, 0);
     }
 }

@@ -57,7 +57,7 @@ uint8_t rx_data;
 char esp8266_rx_buffer[RX_BUFFER_SIZE];
 uint16_t rx_index = 0;
 
-#define TCP_RX_BUFFER_SIZE 8192
+#define TCP_RX_BUFFER_SIZE 16384
 volatile uint8_t tcp_receiving = 0;
 volatile uint8_t tcp_done = 0;
 char tcp_rx_buffer[TCP_RX_BUFFER_SIZE];
@@ -135,18 +135,16 @@ int main(void) {
 
     tui_init();
 
-    tui_printf("LLM chat test\n");
-
-    printf("LCD initialized\n\r");
-    tui_printf("LCD initialized\n");
+    tui_printf_color(GREEN, "[OK] LCD initialized\n");
 
     // Initialize ESP8266
     HAL_UART_Receive_IT(&huart3, &rx_data, 1);
 
     ESP8266_SendCmd("AT\r\n", "OK", 1000);
     ESP8266_SendCmd("AT+CWMODE=1\r\n", "OK", 1000);
+    tui_printf_color(YELLOW, "Connecting WiFi " WIFI_SSID "\n");
     if (ESP8266_SendCmd("AT+CWJAP=\"" WIFI_SSID "\",\"" WIFI_PASSWD "\"\r\n", "WIFI GOT IP", 15000)) {
-        tui_printf_color(GREEN, "[ OK ] WiFi Connected!\n");
+        tui_printf_color(GREEN, "[OK] WiFi Connected!\n");
 
         ESP8266_SendCmd("AT+CIFSR\r\n", "OK", 2000);
     } else {
